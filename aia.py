@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt
 from matplotlib.pyplot import cm
 from matplotlib import patches
 from tqdm import tqdm
-import scipy
+import scipy.linalg
 
 # initialization
 n_max = 85000  # 85000 works
@@ -27,7 +27,7 @@ p_init = np.array([0.0, 0.0])
 
 # initial_det = np.linalg.det(prior_cov)
 # cost_list = [initial_det]
-step_size = 0.1
+step_size = 0.3
 u_all = np.array([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) * step_size
 obstacle_space = [[2, 8], [35, 15], [5, 65], [95, 2]]
 
@@ -110,7 +110,7 @@ def traceback(current_node_id, V):
         current_node_id = V.nodes[current_node_id].parent
         if vis:
             p = V.nodes[current_node_id].p
-            plt.plot(p[1], p[0], 'cx')
+            plt.plot(p[0], p[1], 'cx')
             plt.show()
     path_list.append(V.nodes[current_node_id].p)
     path_list.reverse()
@@ -130,6 +130,7 @@ def RiccatiMap(p, Sigma, target):
     else:
         M = (p - target) / geo_dis
     M = M.reshape(1, 2)
+    #return scipy.linalg.solve_discrete_are(A.T, M.T, W, V)
     return A @ Sigma @ A.T + W - A @ Sigma @ M.T @ np.linalg.inv(M @ Sigma @ M.T + V)@ M @ Sigma @ A.T 
 
 def sample_fv(V, pv=.7):
@@ -150,12 +151,12 @@ def distance_robot_target(p, targets, j, i):
     '''
     compute the distance between robot j and target i
     '''
-    return np.linalg.norm(targets[i] - robots[j])
+    return np.linalg.norm(targets[i] - robots[j], axis=1)
 
 def distance_robot_x(p, x, j, i):
-    return np.linalg.norm(x[i] - robots[j])
+    return np.linalg.norm(x[i] - robots[j], axis=1)
 
-def target_assign(assignment, satisfied):
+def target_assign(assignment, satisfied, force=False):
     '''
     N robot to M target assignment (N < M) 
     assignment: N by M 0,1 matrix
@@ -165,14 +166,20 @@ def target_assign(assignment, satisfied):
     # construct D: those who need to change their target
     # case1: det Sigma_i <= delta_i
     # case2: more than one robot responsible for the same target
-    overlap = assignment.sum(axis=0) > 1
-    col2update = np.logical_or(satisfied, overlap)
-    D = assignment[:, col2update].sum(axis=1) > 0
+    if force:
+        D = np.ones(N, dtype=bool)
+    else:
+        overlap = assignment.sum(axis=0) > 1
+        col2update = np.logical_or(satisfied, overlap)
+        D = assignment[:, col2update].sum(axis=1) > 0
     if D.sum() == 0: # nothing needs to update
         return assignment
     # T_to_assign = unsatisfied - assigned
-    assigned = assignment.sum(axis=0) > 0
-    T2assign = np.logical_not(np.logical_or(assigned, satisfied))
+    if force:
+        T2assign = np.ones(M, dtype=bool)
+    else:
+        assigned = assignment.sum(axis=0) > 0
+        T2assign = np.logical_not(np.logical_or(assigned, satisfied))
     # if all assigned then we reassign
     if T2assign.sum() == 0:
         T2assign = np.logical_not(satisfied)
@@ -196,7 +203,7 @@ def get_target(assignment, j):
     N, M = assignment.shape
     return np.arange(M)[assignment[j]][0]
 
-def sample_fu(x_pred, p, Range=2, pu=0.5):
+def sample_fu(x_pred, p, Range=2, pu=0.7):
     '''
     u biased towards the one that makes robot j next position p_j
     close to predicted position x_hat_i
@@ -222,24 +229,27 @@ def dynamics(p, u):
 
 def main_loop(n_max, assignment, hidden_Sigma, p0):
     nodes_good = []
-    V = Vertex()
-    for p in p0:
-        node_id = V.add(p, hidden_Sigma, None)
-        V.nodes[node_id].cost = 0
-        V.nodes[node_id].assignment = assignment
     thresh = 1e-3
     N, M = assignment.shape
     satisfied = np.zeros(M, dtype=bool)
+    V = []
+    assignment = target_assign(assignment, satisfied, force=True)
+    for j in range(N):
+        V.append(Vertex())
+        node_id = V[j].add(p0[j], hidden_Sigma, None)
+        V[j].nodes[node_id].cost = 0
+        V[j].nodes[node_id].assignment = assignment
+    
     for n in tqdm(range(n_max)):
         if satisfied.sum() == M:
             print('all targets satisfied')
             break
         for j in range(N):
-            v_k_rand = sample_fv(V)
+            v_k_rand = sample_fv(V[j])
             # all q_rand in V.group[v_k_rand] has the same p
-            p_rand_id = V.group[v_k_rand][0]
-            p_rand = V.nodes[p_rand_id].p
-            assignment = V.nodes[p_rand_id].assignment
+            p_rand_id = V[j].group[v_k_rand][0]
+            p_rand = V[j].nodes[p_rand_id].p
+            assignment = V[j].nodes[p_rand_id].assignment
             i = get_target(assignment, j)
             x_pred = targets[i]
             u_new = u_all[sample_fu(x_pred, p_rand)]
@@ -247,30 +257,30 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
 
             if is_free(p_new, obstacle):
                 # taking all possible
-                robots[j] = p_new
-                i = get_target(assignment, j)
-                target = targets[i]
-                dis = distance_robot_target(p_new, targets, j, i)
-                plt.plot(p_new[1], p_new[0], 'rx')
-                plt.pause(1e-5)
-                for q_rand_id in V.group[v_k_rand][:5]:
-                    Sigma_new = RiccatiMap(p_rand, V.nodes[q_rand_id].Sigma, target) if dis <= 2 else np.eye(2)
-                    q_new_id = V.add(p_new, Sigma_new, q_rand_id)
+                target = x_pred
+                dis = distance_robot_target(p_new, targets, j, [i])
+                print('dis', dis)
+                plt.plot(p_new[0], p_new[1], 'rx')
+                plt.pause(1e-8)
+                for q_rand_id in V[j].group[v_k_rand][:5]:
+                    Sigma_new = RiccatiMap(p_rand, V[j].nodes[q_rand_id].Sigma, target) if dis <= 2 else np.eye(2)
+                    q_new_id = V[j].add(p_new, Sigma_new, q_rand_id)
                     # V[q_new_id].parent = q_rand_id
                     uncertainty = np.linalg.det(Sigma_new)
-                    print(uncertainty)
-                    V.nodes[q_new_id].cost = V.nodes[q_rand_id].cost + uncertainty
+                    print('cov', uncertainty)
+                    V[j].nodes[q_new_id].cost = V[j].nodes[q_rand_id].cost + uncertainty
                     if uncertainty <= thresh:
-                        nodes_good.append(q_new_id)
+                        nodes_good.append((j, q_new_id))
                         satisfied[i] = True
                         if satisfied.sum() == M:
                             break
-                    V.nodes[q_new_id].assignment = target_assign(assignment, satisfied)
-
+                    assignment_tmp = target_assign(assignment.copy(), satisfied, force=True)
+                    V[j].nodes[q_new_id].assignment = target_assign(assignment_tmp, satisfied)
+                robots[j] = p_new
             if satisfied.sum() == M:
                 break
     # in the nodes_good select the one with minimal cost and return the path
-    nodes_good_cost = [V.nodes[idx].cost for idx in nodes_good]
+    nodes_good_cost = [V[j].nodes[idx].cost for j, idx in nodes_good]
     solution = traceback(np.argmin(nodes_good_cost), V)
     return solution
 
@@ -297,8 +307,9 @@ def obs_model(j, i):
 
 # globally we have robots and targets
 # are those ground truth? two versions 
-targets = np.array([[6,6], [8,9], [5,2], [3,7]]) # M = 4
-robots = np.array([[1,1], [3,3]]) # N = 2
+targets = np.array([[2,4], [3,7], [5,6], [8, 1]]) * 2 # M = 4
+robots = np.array([[0,0], [7,1]]) * 2 # N = 2
+obstacle *= 2
 M = targets.shape[0]
 N = robots.shape[0]
 assignment = np.zeros((N, M),dtype=bool)
@@ -316,7 +327,7 @@ for obs in obstacle:
     rect = patches.Rectangle(obs[0], obs[1,0]-obs[0,0], obs[1,1]-obs[0,1])
     plt.gca().add_patch(rect)
 for target in targets:
-    plt.plot(target[1], target[0], 'bo')
+    plt.plot(target[0], target[1], 'bo')
 vis = True
 main_loop(100000, assignment, hidden_Sigma=5*np.eye(2), p0=robots)
 
