@@ -217,7 +217,7 @@ def sample_fu(x_pred, p, Range=2, pu=0.7):
     #     i = get_target(assignment, j)
     #     dis.append(distance_robot_x(j, i))
     u_star = np.argmin(dis)
-    if dis[u_star] > Range:
+    if dis[u_star] > Range / 4:
         prob = np.zeros(u_all.shape[0]) + (1 - pu) / (len(u_all) - 1)
         prob[u_star] = pu
     else:
@@ -257,13 +257,14 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
 
             if is_free(p_new, obstacle):
                 # taking all possible
+                robots[j] = p_new
                 target = x_pred
                 dis = distance_robot_target(p_new, targets, j, [i])
                 print('dis', dis)
                 plt.plot(p_new[0], p_new[1], 'rx')
                 plt.pause(1e-8)
                 for q_rand_id in V[j].group[v_k_rand][:5]:
-                    Sigma_new = RiccatiMap(p_rand, V[j].nodes[q_rand_id].Sigma, target) if dis <= 2 else np.eye(2)
+                    Sigma_new = RiccatiMap(p_rand, V[j].nodes[q_rand_id].Sigma, target) if dis <= 2 else np.eye(2) * .25
                     q_new_id = V[j].add(p_new, Sigma_new, q_rand_id)
                     # V[q_new_id].parent = q_rand_id
                     uncertainty = np.linalg.det(Sigma_new)
@@ -276,12 +277,12 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
                             break
                     assignment_tmp = target_assign(assignment.copy(), satisfied, force=True)
                     V[j].nodes[q_new_id].assignment = target_assign(assignment_tmp, satisfied)
-                robots[j] = p_new
             if satisfied.sum() == M:
                 break
     # in the nodes_good select the one with minimal cost and return the path
-    nodes_good_cost = [V[j].nodes[idx].cost for j, idx in nodes_good]
-    solution = traceback(np.argmin(nodes_good_cost), V)
+    for j in range(N):
+        nodes_good_cost = [V[j_node].nodes[idx].cost for j_node, idx in nodes_good if j_node == j]
+        solution = traceback(np.argmin(nodes_good_cost), V[j])
     return solution
 
 def obs_model(j, i):
