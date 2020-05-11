@@ -110,7 +110,8 @@ def traceback(current_node_id, V):
         current_node_id = V.nodes[current_node_id].parent
         if vis:
             p = V.nodes[current_node_id].p
-            plt.plot(p[0], p[1], 'cx')
+            plt.plot(p[1], p[0], 'cx')
+            plt.show()
     path_list.append(V.nodes[current_node_id].p)
     path_list.reverse()
     return path_list
@@ -145,14 +146,14 @@ def sample_fv(V, pv=.7):
         prob[K_max] = pv / len(K_max)
     return np.random.choice(all_group, p=prob)
 
-def distance_robot_target(j, i):
+def distance_robot_target(p, targets, j, i):
     '''
     compute the distance between robot j and target i
     '''
     return np.linalg.norm(targets[i] - robots[j])
 
-def distance_robot_x(j, i):
-    return np.linalg.norm(targets[i] - x[j])
+def distance_robot_x(p, x, j, i):
+    return np.linalg.norm(x[i] - robots[j])
 
 def target_assign(assignment, satisfied):
     '''
@@ -179,7 +180,7 @@ def target_assign(assignment, satisfied):
             return assignment
     for j in np.arange(N)[D]:
         target_idx = np.arange(M)[T2assign]
-        closest = np.argmin(distance_robot_target(j, target_idx))
+        closest = np.argmin(distance_robot_target(robots, targets, j, target_idx))
         i_closest = target_idx[closest]
         assignment[j] = 0
         assignment[j, i_closest] = 1
@@ -195,17 +196,19 @@ def get_target(assignment, j):
     N, M = assignment.shape
     return np.arange(M)[assignment[j]][0]
 
-def sample_fu(assignment, Range=2, pu=0.5):
+def sample_fu(x_pred, p, Range=2, pu=0.5):
     '''
     u biased towards the one that makes robot j next position p_j
     close to predicted position x_hat_i
     '''
     N, M = assignment.shape
     dis = []
-    for j in range(N):
-        p_j_next = [dynamics(robots[j], u) for u in u_all]
-        i = get_target(assignment, j)
-        dis.append(distance_robot_x(j, i))
+    p_j_nexts = [dynamics(p, u) for u in u_all]
+    dis = [np.linalg.norm(x_pred - p_j_next) for p_j_next in p_j_nexts]
+    # for j in range(N):
+    #     p_j_next = [dynamics(robots[j], u) for u in u_all]
+    #     i = get_target(assignment, j)
+    #     dis.append(distance_robot_x(j, i))
     u_star = np.argmin(dis)
     if dis[u_star] > Range:
         prob = np.zeros(u_all.shape[0]) + (1 - pu) / (len(u_all) - 1)
@@ -223,7 +226,8 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
     for p in p0:
         node_id = V.add(p, hidden_Sigma, None)
         V.nodes[node_id].cost = 0
-    thresh = 1e-3
+        V.nodes[node_id].assignment = assignment
+    thresh = 5e-5
     N, M = assignment.shape
     satisfied = np.zeros(M, dtype=bool)
     for n in tqdm(range(n_max)):
@@ -235,12 +239,16 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
             # all q_rand in V.group[v_k_rand] has the same p
             p_rand_id = V.group[v_k_rand][0]
             p_rand = V.nodes[p_rand_id].p
-            u_new = u_all[sample_fu(assignment)]
+            assignment = V.nodes[p_rand_id].assignment
+            i = get_target(assignment, j)
+            x_pred = targets[i]
+            u_new = u_all[sample_fu(p_rand, x_pred)]
             p_new = dynamics(p_rand, u_new)
 
             if is_free(p_new, obstacle):
-                # taking all possible 
-                plt.plot(p_new[0], p_new[1], 'rx')
+                # taking all possible
+                robots[j] = p_new
+                plt.plot(p_new[1], p_new[0], 'rx')
                 plt.pause(1e-5)
                 for q_rand_id in V.group[v_k_rand]:
                     i = get_target(assignment, j)
@@ -256,7 +264,8 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
                         satisfied[i] = True
                         if satisfied.sum() == M:
                             break
-                    assignment = target_assign(assignment, satisfied)
+                    V.nodes[q_new_id].assignment = target_assign(assignment, satisfied)
+
             if satisfied.sum() == M:
                 break
     # in the nodes_good select the one with minimal cost and return the path
@@ -287,7 +296,7 @@ def obs_model(j, i):
 
 # globally we have robots and targets
 # are those ground truth? two versions 
-targets = np.array([[6,6], [8,9], [5,2], [3,7]]) # M = 4s
+targets = np.array([[6,6], [8,9], [5,2], [3,7]]) # M = 4
 robots = np.array([[1,1], [3,3]]) # N = 2
 M = targets.shape[0]
 N = robots.shape[0]
@@ -306,7 +315,7 @@ for obs in obstacle:
     rect = patches.Rectangle(obs[0], obs[1,0]-obs[0,0], obs[1,1]-obs[0,1])
     plt.gca().add_patch(rect)
 for target in targets:
-    plt.plot(target[0], target[1], 'bo')
+    plt.plot(target[1], target[0], 'bo')
 vis = True
 main_loop(100, assignment, hidden_Sigma=5*np.eye(2), p0=robots)
 
