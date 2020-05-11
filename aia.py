@@ -227,7 +227,7 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
         node_id = V.add(p, hidden_Sigma, None)
         V.nodes[node_id].cost = 0
         V.nodes[node_id].assignment = assignment
-    thresh = 5e-5
+    thresh = 1e-3
     N, M = assignment.shape
     satisfied = np.zeros(M, dtype=bool)
     for n in tqdm(range(n_max)):
@@ -242,18 +242,19 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
             assignment = V.nodes[p_rand_id].assignment
             i = get_target(assignment, j)
             x_pred = targets[i]
-            u_new = u_all[sample_fu(p_rand, x_pred)]
+            u_new = u_all[sample_fu(x_pred, p_rand)]
             p_new = dynamics(p_rand, u_new)
 
             if is_free(p_new, obstacle):
                 # taking all possible
                 robots[j] = p_new
+                i = get_target(assignment, j)
+                target = targets[i]
+                dis = distance_robot_target(p_new, targets, j, i)
                 plt.plot(p_new[1], p_new[0], 'rx')
                 plt.pause(1e-5)
-                for q_rand_id in V.group[v_k_rand]:
-                    i = get_target(assignment, j)
-                    target = targets[i]
-                    Sigma_new = RiccatiMap(p_rand, V.nodes[q_rand_id].Sigma, target)
+                for q_rand_id in V.group[v_k_rand][:5]:
+                    Sigma_new = RiccatiMap(p_rand, V.nodes[q_rand_id].Sigma, target) if dis <= 2 else np.eye(2)
                     q_new_id = V.add(p_new, Sigma_new, q_rand_id)
                     # V[q_new_id].parent = q_rand_id
                     uncertainty = np.linalg.det(Sigma_new)
@@ -309,7 +310,7 @@ x = np.zeros_like(targets) + 7 # center of the map
 A = np.eye(2)
 V = np.eye(1) * 0.04 # measurement cov
 W = np.eye(2) * 0 # hidden state cov
-map_ = np.zeros((10, 10, 3),np.uint8) + 255
+map_ = np.zeros((20, 20, 3),np.uint8) + 255
 plt.imshow(map_)
 for obs in obstacle:
     rect = patches.Rectangle(obs[0], obs[1,0]-obs[0,0], obs[1,1]-obs[0,1])
@@ -317,5 +318,5 @@ for obs in obstacle:
 for target in targets:
     plt.plot(target[1], target[0], 'bo')
 vis = True
-main_loop(100, assignment, hidden_Sigma=5*np.eye(2), p0=robots)
+main_loop(100000, assignment, hidden_Sigma=5*np.eye(2), p0=robots)
 
