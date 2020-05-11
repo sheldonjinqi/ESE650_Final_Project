@@ -121,9 +121,10 @@ def RiccatiMap(p, Sigma, target):
     # M is linearized at p
     geo_dis = np.sqrt(np.square(p - target).sum())
     if geo_dis == 0:
-        M = np.zeros((1, 2))
+        M = np.zeros(2)
     else:
         M = (p - target) / geo_dis
+    M = M.reshape(1, 2)
     return A @ Sigma @ A.T + W - A @ Sigma @ M.T @ np.linalg.inv(M @ Sigma @ M.T + V)@ M @ Sigma @ A.T 
 
 def sample_fv(V, pv=.7):
@@ -160,15 +161,17 @@ def target_assign(assignment, satisfied):
     # case1: det Sigma_i <= delta_i
     # case2: more than one robot responsible for the same target
     overlap = assignment.sum(axis=0) > 1
-    col2update = np.logical_not(np.logical_or(satisfied, overlap))
-    D = assignment[col2update].sum(axis=1) > 0
+    col2update = np.logical_or(satisfied, overlap)
+    D = assignment[:, col2update].sum(axis=1) > 0
+    if D.sum() == 0: # nothing needs to update
+        return assignment
     # T_to_assign = unsatisfied - assigned
     assigned = assignment.sum(axis=0) > 0
     T2assign = np.logical_not(np.logical_or(assigned, satisfied))
     # if all assigned then we reassign
     if T2assign.sum() == 0:
         T2assign = np.logical_not(satisfied)
-    for j in D:
+    for j in np.arange(N)[D]:
         target_idx = np.arange(M)[T2assign][0]
         closest = np.argmin(distance_robot_target(j, target_idx))
         i_closest = target_idx[closest]
@@ -178,6 +181,7 @@ def target_assign(assignment, satisfied):
         # if all assigned then we reassign
         if T2assign.sum() == 0:
             T2assign = np.logical_not(satisfied)
+    return assignment
 
 def get_target(assignment, j):
     N, M = assignment.shape
@@ -203,33 +207,41 @@ def sample_fu(assignment, Range=2, pu=0.5):
     return np.random.choice(np.arange(len(u_all)), p=prob)
     
 def dynamics(p, u):
-    return p + u
+    return np.round(p + u, decimal=2)
 
-def main_loop(n_max, hidden_Sigma, p0):
+def main_loop(n_max, assignment, hidden_Sigma, p0):
     nodes_good = []
     V = Vertex()
     for p in p0:
-        V.add(p, hidden_Sigma, None)
-    thresh = 1e-5
-    for n in range(n_max):
-        v_k_rand = sample_fv(V)
-        # all q_rand in V.group[v_k_rand] has the same p
-        p_rand_id = V.group[v_k_rand][0]
-        p_rand = V.nodes[p_rand_id].p
-        u_new = u_all[sample_fu(assignment)]
-        p_new = dynamics(p_rand, u_new)
+        node_id = V.add(p, hidden_Sigma, None)
+        V.nodes[node_id].cost = 0
+    thresh = 1e-3
+    N, M = assignment.shape
+    satisfied = np.zeros(M, dtype=bool)
+    for n in tqdm(range(n_max)):
+        for j in range(N):
+            v_k_rand = sample_fv(V)
+            # all q_rand in V.group[v_k_rand] has the same p
+            p_rand_id = V.group[v_k_rand][0]
+            p_rand = V.nodes[p_rand_id].p
+            u_new = u_all[sample_fu(assignment)]
+            p_new = dynamics(p_rand, u_new)
 
-        if is_free(p_new, obstacle):
-            # taking all possible 
-            for q_rand_id in V.group[v_k_rand]:
-                target = assignment[j]
-                Sigma_new = RiccatiMap(p_rand, V.nodes[q_rand_id].Sigma, target)
-                q_new_id = V.add(p_new, Sigma_new, q_rand_id)
-                # V[q_new_id].parent = q_rand_id
-                uncertainty = np.linalg.det(Sigma_new)
-                V[q_new_id].cost = V[q_rand_id].cost + uncertainty
-                if uncertainty <= thresh:
-                    nodes_good.append(q_new_id)
+            if is_free(p_new, obstacle):
+                # taking all possible 
+                for q_rand_id in V.group[v_k_rand]:
+                    i = get_target(assignment, j)
+                    target = targets[i]
+                    Sigma_new = RiccatiMap(p_rand, V.nodes[q_rand_id].Sigma, target)
+                    q_new_id = V.add(p_new, Sigma_new, q_rand_id)
+                    # V[q_new_id].parent = q_rand_id
+                    uncertainty = np.linalg.det(Sigma_new)
+                    print(uncertainty)
+                    V.nodes[q_new_id].cost = V.nodes[q_rand_id].cost + uncertainty
+                    if uncertainty <= thresh:
+                        nodes_good.append(q_new_id)
+                        satisfied[i] = True
+                    assignment = target_assign(assignment, satisfied)
     # in the nodes_good select the one with minimal cost and return the path
     nodes_good_cost = [V[idx].cost for idx in nodes_good]
     solution = traceback(np.argmin(nodes_good_cost), V)
@@ -268,7 +280,7 @@ x = np.zeros_like(targets) + 7 # center of the map
 # p is the position of robots
 
 A = np.eye(2)
-V = np.eye(1) # measurement cov
-W = np.eye(2) * 0.8 # hidden state cov
-main_loop(10, hidden_Sigma=5, p0=robots)
+V = np.eye(1) * 0.04 # measurement cov
+W = np.eye(2) * 0 # hidden state cov
+main_loop(100, assignment, hidden_Sigma=5*np.eye(2), p0=robots)
 
