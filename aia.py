@@ -4,6 +4,7 @@ from collections import defaultdict
 import math
 from matplotlib import pyplot as plt
 from matplotlib.pyplot import cm
+from matplotlib import patches
 from tqdm import tqdm
 import scipy
 
@@ -104,10 +105,13 @@ def is_free(q, obstacles):
 
 def traceback(current_node_id, V):
     path_list = []
-    while V[current_node_id].parent != None:
-        path_list.append(V[current_node_id].p)
-        current_node_id = V[current_node_id].parent
-    path_list.append(V[current_node_id].p)
+    while V.nodes[current_node_id].parent != None:
+        path_list.append(V.nodes[current_node_id].p)
+        current_node_id = V.nodes[current_node_id].parent
+        if vis:
+            p = V.nodes[current_node_id].p
+            plt.plot(p[0], p[1], 'cx')
+    path_list.append(V.nodes[current_node_id].p)
     path_list.reverse()
     return path_list
 
@@ -132,7 +136,7 @@ def sample_fv(V, pv=.7):
     among all vertex in V, those with longest path share weight pv and others share 1 - pv
     '''
     # compute group id where nodes with max depth isV.nodes[node_id].p
-    K_max = [V.group_map[(V.nodes[node_id].p[0], V.nodes[node_id].p[1])] for node_id in V.depthDict[V.max_depth]]
+    K_max = np.unique([V.group_map[(V.nodes[node_id].p[0], V.nodes[node_id].p[1])] for node_id in V.depthDict[V.max_depth]])
     all_group = np.arange(len(V.group))
     if len(all_group) - len(K_max) == 0:
         prob = np.ones_like(all_group) / len(K_max)
@@ -145,10 +149,10 @@ def distance_robot_target(j, i):
     '''
     compute the distance between robot j and target i
     '''
-    return np.linalg.norm(targets[j] - robots[i])
+    return np.linalg.norm(targets[i] - robots[j])
 
 def distance_robot_x(j, i):
-    return np.linalg.norm(targets[j] - x[i])
+    return np.linalg.norm(targets[i] - x[j])
 
 def target_assign(assignment, satisfied):
     '''
@@ -171,16 +175,20 @@ def target_assign(assignment, satisfied):
     # if all assigned then we reassign
     if T2assign.sum() == 0:
         T2assign = np.logical_not(satisfied)
+        if T2assign.sum() == 0: # this means all targets are satisfied
+            return assignment
     for j in np.arange(N)[D]:
-        target_idx = np.arange(M)[T2assign][0]
+        target_idx = np.arange(M)[T2assign]
         closest = np.argmin(distance_robot_target(j, target_idx))
         i_closest = target_idx[closest]
         assignment[j] = 0
-        assignment[j, i_closet] = 1
-        T_assign[closest] = False
+        assignment[j, i_closest] = 1
+        T2assign[closest] = False
         # if all assigned then we reassign
         if T2assign.sum() == 0:
             T2assign = np.logical_not(satisfied)
+            if T2assign.sum() == 0: # this means all targets are satisfied
+                break
     return assignment
 
 def get_target(assignment, j):
@@ -207,7 +215,7 @@ def sample_fu(assignment, Range=2, pu=0.5):
     return np.random.choice(np.arange(len(u_all)), p=prob)
     
 def dynamics(p, u):
-    return np.round(p + u, decimal=2)
+    return np.round(p + u,  decimals=2)
 
 def main_loop(n_max, assignment, hidden_Sigma, p0):
     nodes_good = []
@@ -219,6 +227,9 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
     N, M = assignment.shape
     satisfied = np.zeros(M, dtype=bool)
     for n in tqdm(range(n_max)):
+        if satisfied.sum() == M:
+            print('all targets satisfied')
+            break
         for j in range(N):
             v_k_rand = sample_fv(V)
             # all q_rand in V.group[v_k_rand] has the same p
@@ -229,6 +240,8 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
 
             if is_free(p_new, obstacle):
                 # taking all possible 
+                plt.plot(p_new[0], p_new[1], 'rx')
+                plt.pause(1e-5)
                 for q_rand_id in V.group[v_k_rand]:
                     i = get_target(assignment, j)
                     target = targets[i]
@@ -241,10 +254,15 @@ def main_loop(n_max, assignment, hidden_Sigma, p0):
                     if uncertainty <= thresh:
                         nodes_good.append(q_new_id)
                         satisfied[i] = True
+                        if satisfied.sum() == M:
+                            break
                     assignment = target_assign(assignment, satisfied)
+            if satisfied.sum() == M:
+                break
     # in the nodes_good select the one with minimal cost and return the path
-    nodes_good_cost = [V[idx].cost for idx in nodes_good]
+    nodes_good_cost = [V.nodes[idx].cost for idx in nodes_good]
     solution = traceback(np.argmin(nodes_good_cost), V)
+    return solution
 
 def obs_model(j, i):
     '''
@@ -282,5 +300,13 @@ x = np.zeros_like(targets) + 7 # center of the map
 A = np.eye(2)
 V = np.eye(1) * 0.04 # measurement cov
 W = np.eye(2) * 0 # hidden state cov
+map_ = np.zeros((10, 10, 3),np.uint8) + 255
+plt.imshow(map_)
+for obs in obstacle:
+    rect = patches.Rectangle(obs[0], obs[1,0]-obs[0,0], obs[1,1]-obs[0,1])
+    plt.gca().add_patch(rect)
+for target in targets:
+    plt.plot(target[0], target[1], 'bo')
+vis = True
 main_loop(100, assignment, hidden_Sigma=5*np.eye(2), p0=robots)
 
